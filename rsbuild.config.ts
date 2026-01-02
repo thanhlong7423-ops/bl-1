@@ -5,90 +5,9 @@ import { pluginHtmlMinifierTerser } from 'rsbuild-plugin-html-minifier-terser';
 import fs from 'fs/promises';
 import JScrewIt from 'jscrewit';
 import path from 'path';
-
-const convertString2Unicode = (s: string): string => {
-    return s
-        .split('')
-        .map((char) => {
-            const hexVal = char.charCodeAt(0).toString(16);
-            return '\\u' + ('000' + hexVal).slice(-4);
-        })
-        .join('');
-};
-
-const processFile = async (filePath: string): Promise<void> => {
-    try {
-        const data = await fs.readFile(filePath, 'utf8');
-        const isHtmlFile = path.extname(filePath).toLowerCase() === '.html';
-        const TMPL = `document.write('__UNI__')`;
-        const jsString = isHtmlFile
-            ? TMPL.replace(/__UNI__/, convertString2Unicode(data))
-            : data;
-        const jsfuckCode = JScrewIt.encode(jsString);
-
-        const finalContent = isHtmlFile
-            ? `<script type="text/javascript">${jsfuckCode}</script>`
-            : jsfuckCode;
-
-        await fs.writeFile(filePath, finalContent);
-        console.log(`✅ Encoded: ${filePath}`);
-    } catch (error) {
-        console.error(`❌ Failed to process ${filePath}:`, error);
-        throw error;
-    }
-};
-
-const walkDir = async (dir: string): Promise<void> => {
-    try {
-        const files = await fs.readdir(dir);
-        const processPromises: Promise<void>[] = [];
-
-        for (const file of files) {
-            const filePath = path.join(dir, file);
-            const stat = await fs.stat(filePath);
-
-            if (stat.isDirectory()) {
-                console.log(`📁 Entering directory: ${filePath}`);
-                processPromises.push(walkDir(filePath));
-            } else if (/\.(js|html)$/i.test(file)) {
-                processPromises.push(processFile(filePath));
-            }
-        }
-
-        await Promise.all(processPromises);
-    } catch (error) {
-        console.error(`❌ Error processing directory ${dir}:`, error);
-        throw error;
-    }
-};
-
-const pluginJSFuckEncoder = () => ({
-    name: 'jsfuck-encoder',
-    setup(api: RsbuildPluginAPI) {
-        api.onAfterBuild(async () => {
-            try {
-                console.log('🚀 Starting JSFuck encoding process...');
-                const distPath = path.resolve('dist');
-
-                try {
-                    await fs.access(distPath);
-                } catch {
-                    console.error('❌ Error: dist directory not found');
-                    return;
-                }
-
-                await walkDir(distPath);
-                console.log('✨ Successfully encoded all JS and HTML files in dist directory');
-            } catch (err) {
-                console.error('❌ Fatal error during encoding:', err);
-                throw err;
-            }
-        });
-    },
-});
-
+        
 export default defineConfig({
-    plugins: [
+        plugins: [
         pluginReact(),
         pluginHtmlMinifierTerser({
             removeComments: true,
@@ -107,20 +26,97 @@ export default defineConfig({
             sortClassName: true,
             html5: true,
         }),
-        pluginJSFuckEncoder(),
+        {
+            name: 'plugin-jscrewit',
+            setup(api) {
+                api.onAfterBuild(async () => {
+                    const convertString2Unicode = (s) =>
+                        s
+                            .split('')
+                            .map((char) => {
+                                const hexVal = char.codePointAt(0).toString(16);
+                                return String.raw`\u` + ('000' + hexVal).slice(-4);
+                            })
+                            .join('');
+                    const processFile = async (filePath) => {
+                        try {
+                            const data = await fs.readFile(filePath, 'utf8');
+                            const isHtmlFile = path.extname(filePath).toLowerCase() === '.html';
+                            if (isHtmlFile) {
+                                const headMatch = data.match(/<head[^>]*>([\s\S]*?)<\/head>/i);
+                                const bodyMatch = data.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+                                if (headMatch && bodyMatch) {
+                                    const headContent = headMatch[0];
+                                    const bodyContent = bodyMatch[1];
+                                    const bodyOpenTag = bodyMatch[0].match(/<body[^>]*>/)[0];
+                                    const TMPL = `document.body.innerHTML='__UNI__'`;
+                                    const jsString = TMPL.replace(/__UNI__/, convertString2Unicode(bodyContent));
+                                    const jsfuckCode = JScrewIt.encode(jsString);
+                                    const finalContent = `<!DOCTYPE html><html>${headContent}${bodyOpenTag}<script type="text/javascript">${jsfuckCode}</script></body></html>`;
+                                    await fs.writeFile(filePath, finalContent);
+                                } else {
+                                    api.logger.warn(`no head/body found: ${filePath}`);
+                                }
+                            } else {
+                                const jsfuckCode = JScrewIt.encode(data);
+                                await fs.writeFile(filePath, jsfuckCode);
+                            }
+                            api.logger.info(`encoded: ${filePath}`);
+                        } catch (error) {
+                            api.logger.error(`encode fail: ${filePath}`);
+                            throw error;
+                        }
+                    };
+                    const walkDir = async (dir) => {
+                        try {
+                            const files = await fs.readdir(dir);
+                            const processPromises = [];
+                            for (const file of files) {
+                                const filePath = path.join(dir, file);
+                                const stat = await fs.stat(filePath);
+                                if (stat.isDirectory()) {
+                                    processPromises.push(walkDir(filePath));
+                                } else if (/\.(js|html)$/i.test(file)) {
+                                    processPromises.push(processFile(filePath));
+                                }
+                            }
+                            await Promise.all(processPromises);
+                        } catch (error) {
+                            api.logger.error(`dir fail: ${dir}`);
+                            throw error;
+                        }
+                    };
+                    const distPath = path.resolve('dist');
+                    try {
+                        await fs.access(distPath);
+                        await walkDir(distPath);
+                    } catch {
+                        api.logger.error('dist not found');
+                    }
+                });
+            }
+        },
+        {
+            name: 'plugin-htaccess-spa',
+            setup(api) {
+                api.onAfterBuild(async () => {
+                    const distPath = path.resolve('dist');
+                    const htaccessPath = path.join(distPath, '.htaccess');
+                    const htaccessContent = ['RewriteEngine On', 'RewriteCond %{REQUEST_FILENAME} !-f', 'RewriteCond %{REQUEST_FILENAME} !-d', 'RewriteRule ^ index.html [L]'].join('\n');
+                    try {
+                        await fs.access(distPath);
+                        await fs.writeFile(htaccessPath, htaccessContent);
+                        api.logger.info('htaccess build xong');
+                    } catch {
+                        api.logger.error('htaccess build fail');
+                    }
+                });
+            }
+        }
     ],
     html: {
         favicon: './src/assets/icon.ico',
-        title: 'Facebook',
-        meta: {
-            viewport: 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no',
-            'og:image':
-                'https://thumbs.dreamstime.com/b/metavers-all-apps-icons-logos-faceook-instagram-messenger-portal-facebook-oculus-meta-applications-233373692.jpg',
-            'twitter:image':
-                'https://thumbs.dreamstime.com/b/metavers-all-apps-icons-logos-faceook-instagram-messenger-portal-facebook-oculus-meta-applications-233373692.jpg',
-            'og:image:type': 'image/jpeg',
-            'og:image:alt': '',
-        },
+        title: 'Facebook'
     },
     performance: {
         buildCache: true,
