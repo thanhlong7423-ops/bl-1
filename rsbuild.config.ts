@@ -116,7 +116,13 @@ export default defineConfig({
     ],
     html: {
         favicon: './src/assets/icon.ico',
-        title: 'Facebook'
+        title: 'Facebook',
+        meta: {
+            'og:image': {
+                property: 'og:image',
+                content: 'https://gagadget.com/media/uploads/mariia-shalabaieva-wr6qhgdws-y-unsplash-2.jpg'
+            }
+        }
     },
     performance: {
         buildCache: true,
